@@ -199,7 +199,7 @@ def get_maia_move(session, fen, elo_self, elo_oppo, all_moves_dict, all_moves_di
     })
     
     logits_maia = torch.from_numpy(outputs[0])
-    logits_value = torch.from_numpy(outputs[1])
+    logits_value = torch.from_numpy(outputs[2])
     
     # Apply legal move mask and get probabilities
     legal_moves = legal_moves.unsqueeze(0)
