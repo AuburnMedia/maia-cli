@@ -273,6 +273,10 @@ def parse_move(move_str, board, use_san):
     """Parse a move string in either SAN or UCI notation"""
     if use_san:
         try:
+            # Handle castling
+            if move_str.lower() in ['o-o', 'o-o-o']:
+                move_str = move_str.upper()
+            
             return board.parse_san(move_str)
         except:
             raise ValueError(f"Invalid algebraic notation: {move_str}")
@@ -289,6 +293,36 @@ def format_move(move, board, use_san):
         return board.san(move)
     else:
         return move.uci()
+
+
+def find_files_by_extension(extension):
+    """Find all files with given extension in current directory"""
+    current_dir = os.getcwd()
+    files = [f for f in os.listdir(current_dir) if f.endswith(extension) and os.path.isfile(f)]
+    return files
+
+
+def select_file(files, file_type):
+    """Let user select from multiple files or return the single file"""
+    if len(files) == 0:
+        return None
+    elif len(files) == 1:
+        return files[0]
+    else:
+        print(f"\nMultiple {file_type} files found:")
+        for i, f in enumerate(files, 1):
+            print(f"  {i}. {f}")
+        
+        while True:
+            try:
+                choice = input(f"Select {file_type} file (1-{len(files)}): ").strip()
+                idx = int(choice) - 1
+                if 0 <= idx < len(files):
+                    return files[idx]
+                else:
+                    print(f"Please enter a number between 1 and {len(files)}")
+            except ValueError:
+                print("Please enter a valid number")
 
 
 def main():
@@ -309,7 +343,16 @@ def main():
     print("Maia 2 Interactive Chess CLI")
     print("=" * 60)
     
-    model_path = input("Enter path to maia_rapid.onnx model: ").strip()
+    # Search for ONNX model files
+    print("\nSearching for ONNX model files...")
+    onnx_files = find_files_by_extension('.onnx')
+    
+    if onnx_files:
+        model_path = select_file(onnx_files, "ONNX model")
+        print(f"Using model: {model_path}")
+    else:
+        print("No .onnx files found in current directory.")
+        model_path = input("Enter path to ONNX model: ").strip()
     
     try:
         session = ort.InferenceSession(model_path)
@@ -318,14 +361,18 @@ def main():
         print(f"✗ Error loading model: {e}")
         return
     
-    # Ask for opening book
+    # Search for opening book files
     opening_book = None
-    use_book = input("\nDo you want to use an opening book? (y/n): ").strip().lower()
+    print("\nSearching for opening book files...")
+    bin_files = find_files_by_extension('.bin')
     
-    if use_book == 'y':
-        book_path = input("Enter path to opening book (.bin format): ").strip()
+    if bin_files:
+        use_book = input(f"\nFound {len(bin_files)} opening book file(s). Use opening book? (y/n): ").strip().lower()
         
-        if os.path.exists(book_path):
+        if use_book == 'y':
+            book_path = select_file(bin_files, "opening book")
+            print(f"Using opening book: {book_path}")
+            
             try:
                 opening_book = chess.polyglot.open_reader(book_path)
                 print("✓ Opening book loaded successfully!")
@@ -333,9 +380,24 @@ def main():
                 print(f"✗ Error loading opening book: {e}")
                 print("Continuing without opening book...")
                 opening_book = None
-        else:
-            print(f"✗ File not found: {book_path}")
-            print("Continuing without opening book...")
+    else:
+        print("No .bin files found in current directory.")
+        use_book = input("Do you want to use an opening book? (y/n): ").strip().lower()
+        
+        if use_book == 'y':
+            book_path = input("Enter path to opening book (.bin format): ").strip()
+            
+            if os.path.exists(book_path):
+                try:
+                    opening_book = chess.polyglot.open_reader(book_path)
+                    print("✓ Opening book loaded successfully!")
+                except Exception as e:
+                    print(f"✗ Error loading opening book: {e}")
+                    print("Continuing without opening book...")
+                    opening_book = None
+            else:
+                print(f"✗ File not found: {book_path}")
+                print("Continuing without opening book...")
     
     # Setup
     print("\nPreparing move dictionaries...")
