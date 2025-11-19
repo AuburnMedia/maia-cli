@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import os
 import random
+import argparse
 
 # Utility functions from maia2 package
 def create_elo_dict():
@@ -217,7 +218,7 @@ def get_book_move(opening_book, board):
         return None
 
 
-def get_maia_move(session, fen, elo_self, elo_oppo, all_moves_dict, all_moves_dict_reversed, elo_dict):
+def get_maia_move(session, fen, elo_self, elo_oppo, all_moves_dict, all_moves_dict_reversed, elo_dict, board_for_san=None):
     """Get the most human-like move from Maia model"""
     
     board_input, elo_self_cat, elo_oppo_cat, legal_moves = preprocessing(
@@ -252,24 +253,56 @@ def get_maia_move(session, fen, elo_self, elo_oppo, all_moves_dict, all_moves_di
         win_prob = 1 - win_prob
         black_flag = True
     
-    # Get move probabilities
-    move_probs = {}
+    # Get move probabilities (keep UCI internally)
+    move_probs_uci = {}
     legal_move_indices = legal_moves.nonzero().flatten().cpu().numpy().tolist()
     
     for move_idx in legal_move_indices:
         move = all_moves_dict_reversed[move_idx]
         if black_flag:
             move = mirror_move(move)
-        move_probs[move] = round(probs[move_idx], 4)
+        move_probs_uci[move] = round(probs[move_idx], 4)
     
     # Sort by probability
-    move_probs = dict(sorted(move_probs.items(), key=lambda item: item[1], reverse=True))
+    move_probs_uci = dict(sorted(move_probs_uci.items(), key=lambda item: item[1], reverse=True))
     
-    return move_probs, win_prob
+    return move_probs_uci, win_prob
+
+
+def parse_move(move_str, board, use_san):
+    """Parse a move string in either SAN or UCI notation"""
+    if use_san:
+        try:
+            return board.parse_san(move_str)
+        except:
+            raise ValueError(f"Invalid algebraic notation: {move_str}")
+    else:
+        try:
+            return chess.Move.from_uci(move_str)
+        except:
+            raise ValueError(f"Invalid UCI notation: {move_str}")
+
+
+def format_move(move, board, use_san):
+    """Format a move in either SAN or UCI notation"""
+    if use_san:
+        return board.san(move)
+    else:
+        return move.uci()
 
 
 def main():
     """Main CLI loop for interactive chess with Maia"""
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Interactive chess game using Maia 2 ONNX model')
+    parser.add_argument('--notation', choices=['san', 'uci'], default='san',
+                        help='Move notation format: san (algebraic notation, default) or uci')
+    args = parser.parse_args()
+    
+    use_san = args.notation == 'san'
+    notation_name = "algebraic notation (SAN)" if use_san else "UCI notation"
+    notation_example = "e4, Nf3, O-O" if use_san else "e2e4, g1f3, e1g1"
     
     # Initialize
     print("=" * 60)
@@ -324,7 +357,8 @@ def main():
     
     print("\n" + "=" * 60)
     print("Game started!")
-    print("Enter moves in UCI format (e.g., e2e4)")
+    print(f"Move notation: {notation_name}")
+    print(f"Enter moves in {notation_name} (e.g., {notation_example})")
     print("Type 'quit' to exit, 'board' to show position")
     if opening_book:
         print("Opening book is active for Maia's moves")
@@ -343,26 +377,29 @@ def main():
         if is_player_turn:
             # Player's turn
             while True:
-                move_input = input("\nYour move: ").strip().lower()
+                move_input = input("\nYour move: ").strip()
                 
-                if move_input == 'quit':
+                if move_input.lower() == 'quit':
                     print("Game ended by player.")
                     if opening_book:
                         opening_book.close()
                     return
-                elif move_input == 'board':
+                elif move_input.lower() == 'board':
                     print(board)
                     continue
                 
                 try:
-                    move = chess.Move.from_uci(move_input)
+                    move = parse_move(move_input, board, use_san)
                     if move in board.legal_moves:
                         board.push(move)
                         break
                     else:
                         print("Illegal move! Try again.")
-                except:
-                    print("Invalid move format! Use UCI notation (e.g., e2e4)")
+                except ValueError as e:
+                    print(f"Invalid move! {e}")
+                    print(f"Use {notation_name} (e.g., {notation_example})")
+                except Exception as e:
+                    print(f"Error parsing move: {e}")
         else:
             # Maia's turn
             print("\nMaia is thinking...")
@@ -372,31 +409,37 @@ def main():
             
             if book_move:
                 print("📖 Using opening book move")
-                best_move = book_move.uci()
+                move_notation = format_move(book_move, board, use_san)
                 board.push(book_move)
-                print(f"Maia plays: {best_move} (from book)")
+                print(f"Maia plays: {move_notation} (from book)")
             else:
                 # Use Maia model
                 fen = board.fen()
-                move_probs, win_prob = get_maia_move(
+                move_probs_uci, win_prob = get_maia_move(
                     session, fen, maia_elo, your_elo, 
                     all_moves_dict, all_moves_dict_reversed, elo_dict
                 )
                 
-                # Get best move
-                best_move = max(move_probs, key=move_probs.get)
-                best_prob = move_probs[best_move]
+                # Get best move (UCI)
+                best_move_uci = max(move_probs_uci, key=move_probs_uci.get)
+                best_prob = move_probs_uci[best_move_uci]
                 
-                print(f"Maia plays: {best_move} (confidence: {best_prob:.1%})")
+                # Convert to chess.Move and format for display
+                best_move_obj = chess.Move.from_uci(best_move_uci)
+                move_notation = format_move(best_move_obj, board, use_san)
+                
+                print(f"Maia plays: {move_notation} (confidence: {best_prob:.1%})")
                 print(f"Win probability: {win_prob:.1%}")
                 
                 # Show top 3 alternatives
-                top_moves = list(move_probs.items())[:3]
+                top_moves_uci = list(move_probs_uci.items())[:3]
                 print("\nTop alternatives:")
-                for i, (move, prob) in enumerate(top_moves, 1):
-                    print(f"  {i}. {move} ({prob:.1%})")
+                for i, (move_uci, prob) in enumerate(top_moves_uci, 1):
+                    move_obj = chess.Move.from_uci(move_uci)
+                    move_display = format_move(move_obj, board, use_san)
+                    print(f"  {i}. {move_display} ({prob:.1%})")
                 
-                board.push(chess.Move.from_uci(best_move))
+                board.push(best_move_obj)
         
         move_count += 1
         print("\n" + "-" * 60 + "\n")
