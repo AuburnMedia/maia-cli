@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Interactive chess game using Maia 2 ONNX model.
+Interactive chess game using Maia 2 ONNX model with opening book support.
 The script provides a CLI loop where you input moves and Maia suggests the most human-like response.
 """
 
 import chess
+import chess.polyglot
 import onnxruntime as ort
 import numpy as np
 import torch
+import os
+import random
 
 # Utility functions from maia2 package
 def create_elo_dict():
@@ -179,6 +182,41 @@ def preprocessing(fen, elo_self, elo_oppo, elo_dict, all_moves_dict):
     return board_input, elo_self, elo_oppo, legal_moves
 
 
+def get_book_move(opening_book, board):
+    """Get a move from the opening book if available"""
+    if opening_book is None:
+        return None
+    
+    try:
+        # Get all book entries for this position
+        entries = list(opening_book.find_all(board))
+        
+        if not entries:
+            return None
+        
+        # Choose move based on weights
+        total_weight = sum(entry.weight for entry in entries)
+        
+        if total_weight == 0:
+            # If all weights are 0, choose the first one
+            return entries[0].move
+        
+        # Use weighted random selection
+        rand_value = random.randint(0, total_weight - 1)
+        cumulative = 0
+        
+        for entry in entries:
+            cumulative += entry.weight
+            if rand_value < cumulative:
+                return entry.move
+        
+        return entries[0].move
+    
+    except Exception as e:
+        print(f"Error reading opening book: {e}")
+        return None
+
+
 def get_maia_move(session, fen, elo_self, elo_oppo, all_moves_dict, all_moves_dict_reversed, elo_dict):
     """Get the most human-like move from Maia model"""
     
@@ -247,6 +285,25 @@ def main():
         print(f"✗ Error loading model: {e}")
         return
     
+    # Ask for opening book
+    opening_book = None
+    use_book = input("\nDo you want to use an opening book? (y/n): ").strip().lower()
+    
+    if use_book == 'y':
+        book_path = input("Enter path to opening book (.bin format): ").strip()
+        
+        if os.path.exists(book_path):
+            try:
+                opening_book = chess.polyglot.open_reader(book_path)
+                print("✓ Opening book loaded successfully!")
+            except Exception as e:
+                print(f"✗ Error loading opening book: {e}")
+                print("Continuing without opening book...")
+                opening_book = None
+        else:
+            print(f"✗ File not found: {book_path}")
+            print("Continuing without opening book...")
+    
     # Setup
     print("\nPreparing move dictionaries...")
     all_moves = get_all_possible_moves()
@@ -269,6 +326,8 @@ def main():
     print("Game started!")
     print("Enter moves in UCI format (e.g., e2e4)")
     print("Type 'quit' to exit, 'board' to show position")
+    if opening_book:
+        print("Opening book is active for Maia's moves")
     print("=" * 60 + "\n")
     
     # Game loop
@@ -288,6 +347,8 @@ def main():
                 
                 if move_input == 'quit':
                     print("Game ended by player.")
+                    if opening_book:
+                        opening_book.close()
                     return
                 elif move_input == 'board':
                     print(board)
@@ -306,26 +367,36 @@ def main():
             # Maia's turn
             print("\nMaia is thinking...")
             
-            fen = board.fen()
-            move_probs, win_prob = get_maia_move(
-                session, fen, maia_elo, your_elo, 
-                all_moves_dict, all_moves_dict_reversed, elo_dict
-            )
+            # Check opening book first
+            book_move = get_book_move(opening_book, board)
             
-            # Get best move
-            best_move = max(move_probs, key=move_probs.get)
-            best_prob = move_probs[best_move]
-            
-            print(f"Maia plays: {best_move} (confidence: {best_prob:.1%})")
-            print(f"Win probability: {win_prob:.1%}")
-            
-            # Show top 3 alternatives
-            top_moves = list(move_probs.items())[:3]
-            print("\nTop alternatives:")
-            for i, (move, prob) in enumerate(top_moves, 1):
-                print(f"  {i}. {move} ({prob:.1%})")
-            
-            board.push(chess.Move.from_uci(best_move))
+            if book_move:
+                print("📖 Using opening book move")
+                best_move = book_move.uci()
+                board.push(book_move)
+                print(f"Maia plays: {best_move} (from book)")
+            else:
+                # Use Maia model
+                fen = board.fen()
+                move_probs, win_prob = get_maia_move(
+                    session, fen, maia_elo, your_elo, 
+                    all_moves_dict, all_moves_dict_reversed, elo_dict
+                )
+                
+                # Get best move
+                best_move = max(move_probs, key=move_probs.get)
+                best_prob = move_probs[best_move]
+                
+                print(f"Maia plays: {best_move} (confidence: {best_prob:.1%})")
+                print(f"Win probability: {win_prob:.1%}")
+                
+                # Show top 3 alternatives
+                top_moves = list(move_probs.items())[:3]
+                print("\nTop alternatives:")
+                for i, (move, prob) in enumerate(top_moves, 1):
+                    print(f"  {i}. {move} ({prob:.1%})")
+                
+                board.push(chess.Move.from_uci(best_move))
         
         move_count += 1
         print("\n" + "-" * 60 + "\n")
@@ -348,6 +419,10 @@ def main():
         print("Draw by repetition!")
     
     print("=" * 60)
+    
+    # Clean up
+    if opening_book:
+        opening_book.close()
 
 
 if __name__ == "__main__":
